@@ -24,10 +24,19 @@ export class VoiceMesh {
   private speaking = false;
   private frame = 0;
   private level = new Uint8Array(0);
+  private buffering = true;
+  private queue: { fromUserId: string; data: SignalData }[] = [];
+  private processor: ScriptProcessorNode | null = null;
+  private silence: GainNode | null = null;
+  private nextPlay = 0;
+  private hearing = new Set<string>();
+  private heardTimers = new Map<string, number>();
 
   onSpeaking: (active: boolean) => void = () => {};
   onSignal: (toUserId: string, data: SignalData) => void = () => {};
   onPeerState: (userId: string, state: "connecting" | "connected" | "failed") => void = () => {};
+  onAudioFrame: (frame: ArrayBuffer) => void = () => {};
+  onHearing: (userId: string, hearing: boolean) => void = () => {};
 
   async start(userId: string) {
     this.userId = userId;
@@ -45,6 +54,8 @@ export class VoiceMesh {
     this.level = new Uint8Array(this.analyser.fftSize);
     this.watch();
     this.applySend();
+    this.listen();
+    await this.flushQueue();
   }
 
   get active() {
@@ -98,7 +109,24 @@ export class VoiceMesh {
   }
 
   async handleSignal(fromUserId: string, data: SignalData) {
-    if (!this.local) return;
+    if (this.buffering || !this.local) {
+      this.queue.push({ fromUserId, data });
+      return;
+    }
+    await this.consumeSignal(fromUserId, data);
+  }
+
+  private async flushQueue() {
+    while (this.queue.length > 0) {
+      const batch = this.queue.splice(0);
+      for (const item of batch) {
+        await this.consumeSignal(item.fromUserId, item.data);
+      }
+    }
+    this.buffering = false;
+  }
+
+  private async consumeSignal(fromUserId: string, data: SignalData) {
     const peer = await this.ensurePeer(fromUserId, false);
     if (data.kind === "offer") {
       await peer.connection.setRemoteDescription({ type: "offer", sdp: data.sdp });
@@ -122,6 +150,17 @@ export class VoiceMesh {
     this.reset();
     this.local?.getTracks().forEach((track) => track.stop());
     this.local = null;
+    this.buffering = true;
+    this.queue = [];
+    this.processor?.disconnect();
+    this.silence?.disconnect();
+    this.processor = null;
+    this.silence = null;
+    this.nextPlay = 0;
+    for (const timer of this.heardTimers.values()) window.clearTimeout(timer);
+    this.heardTimers.clear();
+    for (const id of this.hearing) this.onHearing(id, false);
+    this.hearing.clear();
     void this.context?.close();
     this.context = null;
     this.analyser = null;
@@ -175,8 +214,9 @@ export class VoiceMesh {
       }
     };
     connection.ontrack = (event) => {
-      const stream = event.streams[0];
-      if (stream) this.attach(id, stream);
+      const [remote] = event.streams;
+      const stream = remote ?? new MediaStream([event.track]);
+      this.attach(id, stream);
     };
     connection.onconnectionstatechange = () => {
       const state = connection.connectionState;
@@ -198,6 +238,71 @@ export class VoiceMesh {
     for (const candidate of queued) {
       await peer.connection.addIceCandidate(candidate);
     }
+  }
+
+  private listen() {
+    if (!this.context || !this.local) return;
+    const silence = this.context.createGain();
+    silence.gain.value = 0;
+    const processor = this.context.createScriptProcessor(2048, 1, 1);
+    const source = this.context.createMediaStreamSource(this.local);
+    processor.onaudioprocess = (event) => {
+      const sending =
+        !this.muted &&
+        !this.deafened &&
+        (this.mode === "activity" || this.pushHeld);
+      if (!sending) return;
+      const input = event.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(input.length);
+      for (let index = 0; index < input.length; index += 1) {
+        const sample = Math.max(-1, Math.min(1, input[index] ?? 0));
+        pcm[index] = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+      }
+      this.onAudioFrame(encodeAudio(this.userId, event.inputBuffer.sampleRate, pcm));
+    };
+    source.connect(processor);
+    processor.connect(silence);
+    silence.connect(this.context.destination);
+    this.processor = processor;
+    this.silence = silence;
+  }
+
+  play(frame: ArrayBuffer) {
+    if (!this.context || this.deafened) return;
+    const parsed = decodeAudio(frame);
+    if (!parsed) return;
+    const direct = this.peers.get(parsed.userId)?.connection.connectionState === "connected";
+    if (direct) return;
+    const audio = this.context.createBuffer(1, parsed.pcm.length, parsed.sampleRate);
+    const channel = audio.getChannelData(0);
+    for (let index = 0; index < parsed.pcm.length; index += 1) {
+      channel[index] = (parsed.pcm[index] ?? 0) / 0x8000;
+    }
+    const node = this.context.createBufferSource();
+    node.buffer = audio;
+    const gain = this.context.createGain();
+    gain.gain.value = this.volumes.get(parsed.userId) ?? 1;
+    node.connect(gain);
+    gain.connect(this.context.destination);
+    const now = this.context.currentTime;
+    if (this.nextPlay < now + 0.02) this.nextPlay = now + 0.08;
+    node.start(this.nextPlay);
+    this.nextPlay += audio.duration;
+    this.markHearing(parsed.userId);
+  }
+
+  private markHearing(userId: string) {
+    const existing = this.heardTimers.get(userId);
+    if (existing) window.clearTimeout(existing);
+    if (!this.hearing.has(userId)) {
+      this.hearing.add(userId);
+      this.onHearing(userId, true);
+    }
+    this.heardTimers.set(userId, window.setTimeout(() => {
+      this.heardTimers.delete(userId);
+      if (!this.hearing.delete(userId)) return;
+      this.onHearing(userId, false);
+    }, 1000));
   }
 
   private attach(id: string, stream: MediaStream) {
@@ -223,5 +328,35 @@ export class VoiceMesh {
     this.gains.delete(id);
     this.peers.get(id)?.connection.close();
     this.peers.delete(id);
+    if (this.hearing.delete(id)) this.onHearing(id, false);
   }
+}
+
+function encodeAudio(userId: string, sampleRate: number, pcm: Int16Array) {
+  const id = new TextEncoder().encode(userId).slice(0, 255);
+  const packet = new Uint8Array(2 + id.length + 4 + pcm.byteLength);
+  const view = new DataView(packet.buffer);
+  packet[0] = 1;
+  packet[1] = id.length;
+  packet.set(id, 2);
+  view.setUint32(2 + id.length, sampleRate, true);
+  packet.set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength), 2 + id.length + 4);
+  return packet.buffer;
+}
+
+function decodeAudio(frame: ArrayBuffer) {
+  const view = new DataView(frame);
+  if (frame.byteLength < 8 || view.getUint8(0) !== 1) return null;
+  const idLength = view.getUint8(1);
+  const header = 2 + idLength + 4;
+  if (idLength < 1 || frame.byteLength < header) return null;
+  const userId = new TextDecoder().decode(new Uint8Array(frame, 2, idLength));
+  const sampleRate = view.getUint32(2 + idLength, true);
+  if (sampleRate < 8000 || sampleRate > 96000) return null;
+  const bytes = new Uint8Array(frame, header);
+  const even = bytes.byteLength - (bytes.byteLength % 2);
+  if (even === 0) return null;
+  const copy = new Uint8Array(even);
+  copy.set(bytes.subarray(0, even));
+  return { userId, sampleRate, pcm: new Int16Array(copy.buffer) };
 }

@@ -49,7 +49,11 @@ export class Hub {
       if (!this.bySocket.has(socket)) socket.close(4001, "hello timeout");
     }, 8000);
 
-    socket.on("message", (raw) => {
+    socket.on("message", (raw, isBinary) => {
+      if (isBinary) {
+        this.relayAudio(socket, raw);
+        return;
+      }
       chain = chain
         .then(async () => {
           const text = typeof raw === "string" ? raw : raw.toString();
@@ -345,6 +349,17 @@ export class Hub {
     send(member.socket, { type: "chat", message });
     const target = this.byUser.get(toUserId);
     if (target?.houseId === member.houseId) send(target.socket, { type: "chat", message });
+  }
+
+  private relayAudio(socket: WebSocket, raw: Buffer | ArrayBuffer | Buffer[]) {
+    const member = this.bySocket.get(socket);
+    if (!member?.houseId || !member.roomId || member.muted || member.deafened) return;
+    const payload = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw);
+    if (payload.length < 8 || payload.length > 16_000) return;
+    for (const person of this.inHouse(member.houseId)) {
+      if (person.socket === socket || person.roomId !== member.roomId) continue;
+      if (person.socket.readyState === person.socket.OPEN) person.socket.send(payload);
+    }
   }
 
   private signal(member: Member, toUserId: string, data: SignalData) {

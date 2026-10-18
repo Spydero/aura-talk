@@ -17,6 +17,7 @@ export function useHouseSocket(houseId: string) {
   const [gone, setGone] = useState<string | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const onSignal = useRef<(fromUserId: string, data: SignalData) => void>(() => {});
+  const onAudio = useRef<(frame: ArrayBuffer) => void>(() => {});
   const seen = useRef(new Set<string>());
 
   function remember(message: ChatMessage) {
@@ -30,6 +31,11 @@ export function useHouseSocket(houseId: string) {
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(payload));
     }
+  }, []);
+
+  const sendBinary = useCallback((frame: ArrayBuffer) => {
+    const socket = socketRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) socket.send(frame);
   }, []);
 
   useEffect(() => {
@@ -49,12 +55,19 @@ export function useHouseSocket(houseId: string) {
         const { cookie } = (await response.json()) as { cookie: string };
         if (stopped) return;
         const url = process.env.NEXT_PUBLIC_REALTIME_URL ?? "ws://127.0.0.1:3848";
+        const previous = socket;
         socket = new WebSocket(`${url}/socket`);
+        socket.binaryType = "arraybuffer";
         socketRef.current = socket;
+        previous?.close();
         socket.onopen = () => {
           socket?.send(JSON.stringify({ type: "hello", cookie }));
         };
         socket.onmessage = (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            onAudio.current(event.data);
+            return;
+          }
           const data = JSON.parse(String(event.data)) as ServerEvent;
           if (data.type === "hello") {
             socket?.send(JSON.stringify({ type: "join", houseId }));
@@ -88,7 +101,7 @@ export function useHouseSocket(houseId: string) {
           }
         };
         socket.onclose = () => {
-          if (stopped) return;
+          if (stopped || socketRef.current !== socket) return;
           attempt += 1;
           const delay = Math.min(4000, 500 * attempt);
           retry = setTimeout(() => void connect(), delay);
@@ -124,7 +137,9 @@ export function useHouseSocket(houseId: string) {
     setPasswordRoomId,
     gone,
     send,
+    sendBinary,
     onSignal,
+    onAudio,
     remember,
   };
 }

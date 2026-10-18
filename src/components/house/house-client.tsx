@@ -26,7 +26,7 @@ type Props = {
 export function HouseClient({ house: initialHouse, selfId }: Props) {
   const router = useRouter();
   const socket = useHouseSocket(initialHouse.id);
-  const { send, setNotice, onSignal } = socket;
+  const { send, sendBinary, setNotice, onSignal, onAudio } = socket;
   const announced = useRef(false);
   const voiceRef = useRef<VoiceMesh | null>(null);
   if (!voiceRef.current) voiceRef.current = new VoiceMesh();
@@ -42,6 +42,7 @@ export function HouseClient({ house: initialHouse, selfId }: Props) {
   const [pushHeld, setPushHeld] = useState(false);
   const [volumes, setVolumes] = useState<Record<string, number>>({});
   const [peerStates, setPeerStates] = useState<Record<string, "connecting" | "connected" | "failed">>({});
+  const [hearing, setHearing] = useState<Record<string, boolean>>({});
   const [dm, setDm] = useState<PresenceMember | null>(null);
   const [floorOpen, setFloorOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
@@ -77,13 +78,18 @@ export function HouseClient({ house: initialHouse, selfId }: Props) {
     if (!voice) return;
     voice.onSignal = (toUserId, data) => send({ type: "signal", toUserId, data });
     voice.onSpeaking = (speaking) => send({ type: "status", speaking });
+    voice.onAudioFrame = (frame) => sendBinary(frame);
+    voice.onHearing = (userId, active) => {
+      setHearing((current) => (current[userId] === active ? current : { ...current, [userId]: active }));
+    };
     voice.onPeerState = (userId, state) => {
       setPeerStates((current) => ({ ...current, [userId]: state }));
     };
     onSignal.current = (fromUserId, data) => {
       void voice.handleSignal(fromUserId, data);
     };
-  }, [send, onSignal]);
+    onAudio.current = (frame) => voice.play(frame);
+  }, [send, sendBinary, onSignal, onAudio]);
 
   useEffect(() => {
     if (socket.status !== "live" || announced.current) return;
@@ -304,6 +310,7 @@ export function HouseClient({ house: initialHouse, selfId }: Props) {
             voiceReady={voiceReady}
             micError={micError}
             peerStates={peerStates}
+            hearing={hearing}
             volumes={volumes}
             onEnableMic={() => void enableMic()}
             onRetryAudio={() => {

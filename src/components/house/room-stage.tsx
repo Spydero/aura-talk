@@ -16,6 +16,7 @@ type Props = {
   voiceReady: boolean;
   micError: string | null;
   peerStates: Record<string, "connecting" | "connected" | "failed">;
+  hearing: Record<string, boolean>;
   volumes: Record<string, number>;
   onEnableMic: () => void;
   onRetryAudio: () => void;
@@ -64,6 +65,7 @@ export function RoomStage(props: Props) {
             {props.people.map((person) => {
               const self = person.userId === props.selfId;
               const audio = props.peerStates[person.userId];
+              const hearing = Boolean(props.hearing[person.userId]) || audio === "connected";
               return (
                 <article
                   key={person.userId}
@@ -94,10 +96,13 @@ export function RoomStage(props: Props) {
                       {person.muted ? <MicOff className="size-3" /> : null}
                       {person.deafened ? <HeadphoneOff className="size-3" /> : null}
                     </p>
-                    {!self && audio === "failed" ? (
+                    {!self && hearing ? (
+                      <p className="mt-1 text-xs text-primary">Audio is coming through</p>
+                    ) : null}
+                    {!self && !hearing && audio === "failed" ? (
                       <p className="mt-1 text-xs text-destructive">Audio did not connect.</p>
                     ) : null}
-                    {!self && audio === "connecting" && props.voiceReady ? (
+                    {!self && !hearing && audio === "connecting" && props.voiceReady ? (
                       <p className="mt-1 text-xs text-muted-foreground">Linking audio…</p>
                     ) : null}
                   </div>
@@ -140,7 +145,7 @@ export function RoomStage(props: Props) {
 
       {!props.voiceReady ? (
         <div className="mx-5 mb-4 rounded-2xl border bg-card/80 p-4">
-          <p className="text-sm">The room can hear you after the microphone opens.</p>
+          <p className="text-sm">Open the microphone here, then listen in the other account&apos;s window. This window does not play your own voice.</p>
           {props.micError ? <p className="mt-1 text-sm text-destructive">{props.micError}</p> : null}
           <Button className="mt-3" onClick={props.onEnableMic}>
             Open microphone
