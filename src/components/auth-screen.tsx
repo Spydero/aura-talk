@@ -5,11 +5,12 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { authClient } from "@/lib/auth-client";
+import { cn } from "@/lib/utils";
 
 export function AuthScreen() {
   const router = useRouter();
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
 
@@ -66,12 +67,29 @@ export function AuthScreen() {
       </section>
       <section className="flex items-center px-6 py-10 sm:px-12">
         <div className="w-full max-w-md rounded-3xl border bg-card/80 p-6">
-          <Tabs defaultValue="sign-in">
-            <TabsList className="w-full">
-              <TabsTrigger value="sign-in">Sign in</TabsTrigger>
-              <TabsTrigger value="sign-up">Create account</TabsTrigger>
-            </TabsList>
-            <TabsContent value="sign-in">
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1">
+            <button
+              type="button"
+              className={cn("rounded-md px-3 py-1.5 text-sm", mode === "sign-in" ? "bg-background text-foreground" : "text-muted-foreground")}
+              onClick={() => {
+                setMode("sign-in");
+                setError(null);
+              }}
+            >
+              Sign in
+            </button>
+            <button
+              type="button"
+              className={cn("rounded-md px-3 py-1.5 text-sm", mode === "sign-up" ? "bg-background text-foreground" : "text-muted-foreground")}
+              onClick={() => {
+                setMode("sign-up");
+                setError(null);
+              }}
+            >
+              Create account
+            </button>
+          </div>
+          {mode === "sign-in" ? (
               <form className="mt-4 space-y-3" onSubmit={signIn}>
                 <div className="space-y-1.5">
                   <Label htmlFor="sign-in-email">Email</Label>
@@ -86,8 +104,7 @@ export function AuthScreen() {
                   {pending ? "Signing in…" : "Enter"}
                 </Button>
               </form>
-            </TabsContent>
-            <TabsContent value="sign-up">
+          ) : (
               <form className="mt-4 space-y-3" onSubmit={signUp}>
                 <div className="space-y-1.5">
                   <Label htmlFor="sign-up-name">Name</Label>
@@ -106,8 +123,7 @@ export function AuthScreen() {
                   {pending ? "Creating…" : "Create account"}
                 </Button>
               </form>
-            </TabsContent>
-          </Tabs>
+          )}
         </div>
       </section>
     </main>
