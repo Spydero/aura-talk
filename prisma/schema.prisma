@@ -1,0 +1,138 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String    @id
+  name          String
+  email         String
+  emailVerified Boolean   @default(false)
+  image         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      Session[]
+  accounts      Account[]
+  housesOwned   House[]       @relation("HouseOwner")
+  memberships   HouseMember[]
+  messages      Message[]     @relation("MessageAuthor")
+  received      Message[]     @relation("MessageRecipient")
+
+  @@unique([email])
+  @@map("user")
+}
+
+model House {
+  id           String        @id @default(cuid())
+  name         String
+  code         String        @unique
+  welcome      String        @default("")
+  passwordHash String?
+  ownerId      String
+  owner        User          @relation("HouseOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  rooms        Room[]
+  members      HouseMember[]
+  messages     Message[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model HouseMember {
+  id       String   @id @default(cuid())
+  houseId  String
+  userId   String
+  house    House    @relation(fields: [houseId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now())
+
+  @@unique([houseId, userId])
+  @@index([userId])
+}
+
+model Room {
+  id           String    @id @default(cuid())
+  houseId      String
+  parentId     String?
+  name         String
+  topic        String    @default("")
+  passwordHash String?
+  maxUsers     Int       @default(16)
+  sortOrder    Int       @default(0)
+  house        House     @relation(fields: [houseId], references: [id], onDelete: Cascade)
+  parent       Room?     @relation("RoomTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     Room[]    @relation("RoomTree")
+  messages     Message[]
+  createdAt    DateTime  @default(now())
+
+  @@index([houseId, sortOrder])
+}
+
+model Message {
+  id          String   @id @default(cuid())
+  houseId     String
+  roomId      String?
+  authorId    String
+  recipientId String?
+  body        String
+  createdAt   DateTime @default(now())
+  house       House    @relation(fields: [houseId], references: [id], onDelete: Cascade)
+  room        Room?    @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  author      User     @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  recipient   User?    @relation("MessageRecipient", fields: [recipientId], references: [id], onDelete: SetNull)
+
+  @@index([houseId, roomId, createdAt])
+  @@index([houseId, authorId, recipientId])
+}
+
+model Session {
+  id        String   @id
+  expiresAt DateTime
+  token     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  ipAddress String?
+  userAgent String?
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
